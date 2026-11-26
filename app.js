@@ -47,6 +47,7 @@ const gamePill = $("gamePill");
 const gameOver = $("gameover");
 const gameOverText = $("gameOverText");
 const playAgainBtn = $("playAgainBtn");
+const dodgeBtn = $("dodgeBtn");
 
 // ---------------------------------------------------------------------------
 // Three.js setup
@@ -467,6 +468,10 @@ function updateGameHud() {
 }
 
 function startGame() {
+  lastMode = "orb";
+  dodge.active = false;
+  monster.root.visible = true;
+  hideRocks();
   game.active = true;
   game.score = 0;
   game.timeLeft = GAME_TIME;
@@ -524,6 +529,134 @@ function updateGame(dt, t) {
 function toggleGame() {
   if (game.active) endGame();
   startGame();
+}
+
+// ---------------------------------------------------------------------------
+// Game 2: "Dodge Storm". Rocks fall toward you; steer the monster out of their path.
+// You have 3 lives and a short invulnerable blink after each hit.
+// Score = seconds survived. Best score is saved on the device.
+// ---------------------------------------------------------------------------
+const ROCK_COUNT = 14;
+const rockGeo = new THREE.DodecahedronGeometry(0.45, 0);
+const rockMat = new THREE.MeshStandardMaterial({ color: 0x3f3f58, emissive: 0x7f1d1d, emissiveIntensity: 0.6, roughness: 0.7 });
+const rocks = [];
+const dodge = { active: false, lives: 3, survived: 0, invuln: 0, spawnTimer: 0 };
+let bestDodge = 0;
+let lastMode = "orb";
+try {
+  bestDodge = Number(localStorage.getItem("irusu-dodge-best") || 0);
+} catch (_) {
+  bestDodge = 0;
+}
+for (let i = 0; i < ROCK_COUNT; i++) {
+  const mesh = new THREE.Mesh(rockGeo, rockMat);
+  mesh.visible = false;
+  scene.add(mesh);
+  rocks.push({ mesh, x: 0, y: 0, vy: 0, alive: false });
+}
+
+function hideRocks() {
+  for (const r of rocks) {
+    r.alive = false;
+    r.mesh.visible = false;
+  }
+}
+
+function dodgeHud() {
+  const text = `${dodge.lives} lives · ${Math.floor(dodge.survived)}s · best ${bestDodge}`;
+  if (text !== lastHudText) {
+    gamePill.textContent = text;
+    lastHudText = text;
+  }
+}
+
+function startDodge() {
+  lastMode = "dodge";
+  game.active = false;
+  for (const o of orbs) {
+    o.alive = false;
+    o.mesh.visible = false;
+  }
+  dodge.active = true;
+  dodge.lives = 3;
+  dodge.survived = 0;
+  dodge.invuln = 0;
+  dodge.spawnTimer = 0;
+  hideRocks();
+  gameOver.classList.add("hidden");
+  gamePill.classList.remove("hidden");
+  lastHudText = "";
+  dodgeHud();
+}
+
+function endDodge() {
+  dodge.active = false;
+  monster.root.visible = true;
+  hideRocks();
+  const score = Math.floor(dodge.survived);
+  if (score > bestDodge) {
+    bestDodge = score;
+    try {
+      localStorage.setItem("irusu-dodge-best", String(bestDodge));
+    } catch (_) {}
+  }
+  lastHudText = "";
+  gamePill.textContent = `Dodge over · ${score}s`;
+  gameOverText.textContent = `You survived ${score}s. Best: ${bestDodge}s.`;
+  gameOver.classList.remove("hidden");
+}
+
+function updateDodge(dt, t) {
+  if (!dodge.active) return;
+  dodge.survived += dt;
+  dodge.invuln = Math.max(0, dodge.invuln - dt);
+  // Monster blinks while invulnerable after a hit
+  monster.root.visible = dodge.invuln <= 0 || Math.floor(t * 10) % 2 === 0;
+
+  // Rocks arrive faster the longer you survive
+  dodge.spawnTimer -= dt;
+  if (dodge.spawnTimer <= 0) {
+    const r = rocks.find((rock) => !rock.alive);
+    if (r) {
+      r.alive = true;
+      r.x = (Math.random() * 2 - 1) * 4.5;
+      r.y = 4.5;
+      r.vy = -(2.5 + dodge.survived * 0.05);
+      r.mesh.position.set(r.x, r.y, -CAM_DIST);
+      r.mesh.visible = true;
+    }
+    dodge.spawnTimer = Math.max(0.35, 1.1 - dodge.survived * 0.01);
+  }
+
+  const hitRadius = 0.9 * cur.scale + 0.45;
+  for (const r of rocks) {
+    if (!r.alive) continue;
+    r.y += r.vy * dt;
+    r.mesh.position.y = r.y;
+    r.mesh.rotation.x += dt * 2;
+    r.mesh.rotation.y += dt * 1.3;
+    if (r.y < -4) {
+      r.alive = false;
+      r.mesh.visible = false;
+      continue;
+    }
+    if (dodge.invuln <= 0 && Math.hypot(r.x - cur.x, r.y - cur.y) < hitRadius) {
+      dodge.lives -= 1;
+      dodge.invuln = 1.2;
+      r.alive = false;
+      r.mesh.visible = false;
+      if (dodge.lives <= 0) {
+        endDodge();
+        return;
+      }
+    }
+  }
+  dodgeHud();
+}
+
+function toggleDodge() {
+  if (dodge.active) endDodge();
+  startDodge();
 }
 
 // ---------------------------------------------------------------------------
@@ -756,7 +889,7 @@ function frame(now) {
 
   if (!handLandmarks && !pointerActive) {
     setIdleTarget(t);
-    if (game.active) {
+    if (game.active || dodge.active) {
       // No hand: the monster follows the centre of your view (turn the phone to steer)
       const g = screenToWorld(window.innerWidth / 2, window.innerHeight / 2);
       target.x = g.x;
@@ -765,6 +898,7 @@ function frame(now) {
   }
 
   updateGame(dt, t);
+  updateDodge(dt, t);
   updateCameraLook(dt);
   updateMonster(dt, t);
   renderFrame();
@@ -826,7 +960,8 @@ resetBtn.addEventListener("click", () => {
 
 headsetBtn.addEventListener("click", () => setHeadset(!headsetOn));
 gameBtn.addEventListener("click", toggleGame);
-playAgainBtn.addEventListener("click", startGame);
+dodgeBtn.addEventListener("click", toggleDodge);
+playAgainBtn.addEventListener("click", () => (lastMode === "dodge" ? startDodge() : startGame()));
 
 window.addEventListener("resize", resize);
 window.addEventListener("orientationchange", resize);
