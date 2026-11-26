@@ -248,6 +248,16 @@ button.ghost {
   .bottom li { padding: 8px 10px; font-size: 12px; }
 }
 
+/* ---------- Headset view: hide all UI so each eye sees only the scene ---------- */
+body.headset .top,
+body.headset .bottom,
+body.headset #intro,
+body.headset #overlay {
+  display: none;
+}
+body.headset { background: #05060a; }
+body.headset::before { display: none; }
+
 @media (prefers-reduced-motion: reduce) {
   #cam, .bottom { transition: none; }
 }

@@ -41,6 +41,7 @@ const startBtn = $("startBtn");
 const introStatus = $("introStatus");
 const flipBtn = $("flipBtn");
 const resetBtn = $("resetBtn");
+const headsetBtn = $("headsetBtn");
 
 // ---------------------------------------------------------------------------
 // Three.js setup
@@ -415,6 +416,60 @@ function setIdleTarget(t) {
   target.pitch = 0;
 }
 
+// ---------------------------------------------------------------------------
+// Headset mode: side-by-side stereo for a phone VR viewer (Cardboard-style)
+// ---------------------------------------------------------------------------
+const stereo = new THREE.StereoCamera();
+stereo.eyeSep = 0.064; // distance between eyes in scene units (about 64 mm)
+let headsetOn = false;
+
+async function setHeadset(on) {
+  headsetOn = on;
+  document.body.classList.toggle("headset", on);
+  if (on) {
+    try {
+      await document.documentElement.requestFullscreen?.();
+      await screen.orientation.lock("landscape");
+    } catch (err) {
+      console.warn("Fullscreen or landscape lock unavailable", err);
+    }
+    // The back camera faces forward, so it can see hands held in front of the viewer
+    if (facingMode === "user") {
+      facingMode = "environment";
+      try {
+        await startCamera();
+      } catch (err) {
+        console.warn("Back camera unavailable", err);
+      }
+    }
+  } else {
+    try {
+      screen.orientation.unlock();
+      await document.exitFullscreen?.();
+    } catch (_) {}
+  }
+}
+
+// Draw the scene once (normal) or twice (left and right eye halves)
+function renderFrame() {
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  if (!headsetOn) {
+    renderer.setScissorTest(false);
+    renderer.setViewport(0, 0, w, h);
+    renderer.render(scene, camera);
+    return;
+  }
+  stereo.update(camera);
+  renderer.setScissorTest(true);
+  renderer.setViewport(0, 0, w / 2, h);
+  renderer.setScissor(0, 0, w / 2, h);
+  renderer.render(scene, stereo.cameraL);
+  renderer.setViewport(w / 2, 0, w / 2, h);
+  renderer.setScissor(w / 2, 0, w / 2, h);
+  renderer.render(scene, stereo.cameraR);
+}
+
 // Drag fallback: drag the screen to look around when the phone has no gyroscope
 let pointerActive = false;
 let lastPX = 0;
@@ -595,7 +650,7 @@ function frame(now) {
 
   updateCameraLook(dt);
   updateMonster(dt, t);
-  renderer.render(scene, camera);
+  renderFrame();
 }
 
 function resize() {
@@ -651,6 +706,8 @@ resetBtn.addEventListener("click", () => {
   target.y = 0;
   target.scale = 1;
 });
+
+headsetBtn.addEventListener("click", () => setHeadset(!headsetOn));
 
 window.addEventListener("resize", resize);
 window.addEventListener("orientationchange", resize);
