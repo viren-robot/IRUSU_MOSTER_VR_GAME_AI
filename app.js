@@ -53,7 +53,7 @@ stageEl.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(FOV, 1, 0.1, 100);
-camera.position.set(0, 0.4, CAM_DIST);
+camera.position.set(0, 0, 0);       // viewer sits at the centre of a 360° world
 
 scene.add(new THREE.HemisphereLight(0xdbeafe, 0x1e1b4b, 1.1));
 const keyLight = new THREE.DirectionalLight(0xffffff, 1.7);
@@ -62,6 +62,98 @@ scene.add(keyLight);
 const rimLight = new THREE.PointLight(0x7dd3fc, 8, 25, 2);
 rimLight.position.set(-4, 2, -3);
 scene.add(rimLight);
+
+// ---------------------------------------------------------------------------
+// 360° world: sky sphere + look-around (phone gyroscope, or drag fallback)
+// ---------------------------------------------------------------------------
+function buildSky() {
+  const w = 2048;
+  const h = 1024;
+  const c = document.createElement("canvas");
+  c.width = w;
+  c.height = h;
+  const g = c.getContext("2d");
+
+  const grad = g.createLinearGradient(0, 0, 0, h);
+  grad.addColorStop(0.0, "#05060f");
+  grad.addColorStop(0.45, "#1b1240");
+  grad.addColorStop(0.55, "#2a1b5c");
+  grad.addColorStop(1.0, "#0a0a16");
+  g.fillStyle = grad;
+  g.fillRect(0, 0, w, h);
+
+  // Soft aurora glows along the horizon
+  for (const [x, rgb] of [[0.2, "125,211,252"], [0.55, "167,139,250"], [0.85, "244,114,182"]]) {
+    const rg = g.createRadialGradient(x * w, h * 0.55, 0, x * w, h * 0.55, w * 0.18);
+    rg.addColorStop(0, `rgba(${rgb},0.35)`);
+    rg.addColorStop(1, `rgba(${rgb},0)`);
+    g.fillStyle = rg;
+    g.fillRect(0, 0, w, h);
+  }
+
+  // Stars (seeded so every visit looks the same)
+  let seed = 7;
+  const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  for (let i = 0; i < 1400; i++) {
+    g.fillStyle = `rgba(255,255,255,${0.3 + rnd() * 0.7})`;
+    g.fillRect(rnd() * w, rnd() * h * 0.9, rnd() < 0.1 ? 2 : 1, rnd() < 0.1 ? 2 : 1);
+  }
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const sky = new THREE.Mesh(
+    new THREE.SphereGeometry(60, 64, 32),
+    new THREE.MeshBasicMaterial({ map: tex, side: THREE.BackSide, depthWrite: false })
+  );
+  scene.add(sky);
+}
+buildSky();
+
+// Look-around state
+const deviceQ = new THREE.Quaternion();
+const screenQ = new THREE.Quaternion();
+const euler = new THREE.Euler();
+const zAxis = new THREE.Vector3(0, 0, 1);
+const xToY = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5));
+let deviceOn = false;
+let dev = { alpha: 0, beta: 0, gamma: 0 };
+let dragYaw = 0;
+let dragPitch = 0;
+
+window.addEventListener("deviceorientation", (e) => {
+  if (e.alpha == null && e.beta == null) return;
+  deviceOn = true;
+  const d = THREE.MathUtils.degToRad;
+  dev = { alpha: d(e.alpha || 0), beta: d(e.beta || 0), gamma: d(e.gamma || 0) };
+});
+
+async function requestOrientationPermission() {
+  // iOS needs an explicit permission prompt; Android Chrome does not.
+  const DOE = window.DeviceOrientationEvent;
+  if (DOE && typeof DOE.requestPermission === "function") {
+    try {
+      await DOE.requestPermission();
+    } catch (err) {
+      console.warn("Motion permission not granted", err);
+    }
+  }
+}
+
+function updateCameraLook(dt) {
+  if (deviceOn) {
+    // Standard device-orientation to camera-quaternion mapping
+    const angle = THREE.MathUtils.degToRad(window.screen?.orientation?.angle ?? 0);
+    euler.set(dev.beta, dev.alpha, -dev.gamma, "YXZ");
+    deviceQ.setFromEuler(euler);
+    deviceQ.multiply(xToY);
+    deviceQ.multiply(screenQ.setFromAxisAngle(zAxis, -angle));
+  } else {
+    euler.set(dragPitch, dragYaw, 0, "YXZ");
+    deviceQ.setFromEuler(euler);
+  }
+  camera.quaternion.slerp(deviceQ, 1 - Math.exp(-12 * dt));
+  camera.updateMatrixWorld();
+}
 
 function radialShadowTexture() {
   const c = document.createElement("canvas");
@@ -239,16 +331,17 @@ function videoToScreen(nx, ny) {
   return { x: ox + nx * vw * s, y: oy + ny * vh * s };
 }
 
-// Screen px -> world coords on the z = 0 plane the monster lives on.
+// Screen px -> world point on the plane the monster lives on (z = -CAM_DIST).
+// Raycasting keeps this correct while the viewer turns around in 360°.
+const raycaster = new THREE.Raycaster();
+const ndcVec = new THREE.Vector2();
+const monsterPlane = new THREE.Plane(new THREE.Vector3(0, 0, 1), CAM_DIST);
+const hitPoint = new THREE.Vector3();
 function screenToWorld(sx, sy) {
-  const sw = window.innerWidth;
-  const sh = window.innerHeight;
-  const halfH = Math.tan((FOV * Math.PI) / 360) * CAM_DIST;
-  const halfW = halfH * (sw / sh);
-  return {
-    x: ((sx / sw) * 2 - 1) * halfW,
-    y: (1 - (sy / sh) * 2) * halfH,
-  };
+  ndcVec.set((sx / window.innerWidth) * 2 - 1, 1 - (sy / window.innerHeight) * 2);
+  raycaster.setFromCamera(ndcVec, camera);
+  if (!raycaster.ray.intersectPlane(monsterPlane, hitPoint)) return { x: 0, y: 0 };
+  return { x: hitPoint.x, y: hitPoint.y };
 }
 
 // Convert a MediaPipe landmark (normalized, unmirrored) to screen px.
@@ -322,18 +415,23 @@ function setIdleTarget(t) {
   target.pitch = 0;
 }
 
-// Pointer fallback (no camera): drag the monster around
+// Drag fallback: drag the screen to look around when the phone has no gyroscope
 let pointerActive = false;
+let lastPX = 0;
+let lastPY = 0;
 window.addEventListener("pointerdown", (e) => {
   if (e.target.closest("button")) return;
   pointerActive = true;
+  lastPX = e.clientX;
+  lastPY = e.clientY;
 });
 window.addEventListener("pointerup", () => (pointerActive = false));
 window.addEventListener("pointermove", (e) => {
-  if (!pointerActive || handLandmarks) return;
-  const w = screenToWorld(e.clientX, e.clientY);
-  target.x = w.x;
-  target.y = w.y;
+  if (!pointerActive) return;
+  dragYaw -= (e.clientX - lastPX) * 0.005;
+  dragPitch = clamp(dragPitch - (e.clientY - lastPY) * 0.005, -1.2, 1.2);
+  lastPX = e.clientX;
+  lastPY = e.clientY;
 });
 
 // ---------------------------------------------------------------------------
@@ -345,7 +443,7 @@ function updateMonster(dt, t) {
     cur[key] = damp(cur[key], target[key], k, dt);
   }
 
-  monster.root.position.set(cur.x, cur.y, 0);
+  monster.root.position.set(cur.x, cur.y, -CAM_DIST);
   monster.root.scale.setScalar(cur.scale);
   monster.root.rotation.set(cur.pitch, cur.yaw, 0);
 
@@ -495,6 +593,7 @@ function frame(now) {
     setIdleTarget(t);
   }
 
+  updateCameraLook(dt);
   updateMonster(dt, t);
   renderer.render(scene, camera);
 }
@@ -515,6 +614,7 @@ startBtn.addEventListener("click", async () => {
   startBtn.disabled = true;
   introStatus.textContent = "Starting camera…";
   try {
+    await requestOrientationPermission();
     await startCamera();
     introStatus.textContent = "Loading hand model…";
     handLandmarker = await loadHandModel();
