@@ -30,6 +30,7 @@
     <div class="pills">
       <span id="trackPill" class="pill">Hand: off</span>
       <span id="gesturePill" class="pill">Idle</span>
+      <span id="gamePill" class="pill hidden">Orb Hunt</span>
     </div>
   </header>
 
@@ -38,6 +39,12 @@
     <p>A 360° world. Your hand (21 landmarks) drives the monster. Turn your phone to look around.</p>
     <button id="startBtn" type="button">Start camera</button>
     <p id="introStatus" class="fine">Allow camera access when prompted. Needs HTTPS.</p>
+  </section>
+
+  <section id="gameover" class="glass center hidden">
+    <h1>Round over</h1>
+    <p id="gameOverText"></p>
+    <button id="playAgainBtn" type="button">Play again</button>
   </section>
 
   <section id="help" class="glass bottom hidden">
@@ -51,6 +58,7 @@
       <button id="flipBtn" class="ghost" type="button">Flip camera</button>
       <button id="resetBtn" class="ghost" type="button">Reset</button>
       <button id="headsetBtn" class="ghost" type="button">Headset view</button>
+      <button id="gameBtn" class="ghost" type="button">Orb Hunt</button>
     </div>
   </section>
 

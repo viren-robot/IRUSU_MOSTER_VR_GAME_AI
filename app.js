@@ -42,6 +42,11 @@ const introStatus = $("introStatus");
 const flipBtn = $("flipBtn");
 const resetBtn = $("resetBtn");
 const headsetBtn = $("headsetBtn");
+const gameBtn = $("gameBtn");
+const gamePill = $("gamePill");
+const gameOver = $("gameover");
+const gameOverText = $("gameOverText");
+const playAgainBtn = $("playAgainBtn");
 
 // ---------------------------------------------------------------------------
 // Three.js setup
@@ -417,6 +422,111 @@ function setIdleTarget(t) {
 }
 
 // ---------------------------------------------------------------------------
+// Game mode: "Orb Hunt". Steer the monster over glowing orbs before time runs out.
+// Gold orbs are worth 3 points, normal orbs 1. Best score is saved on the device.
+// ---------------------------------------------------------------------------
+const GAME_TIME = 60;   // seconds per round
+const ORB_COUNT = 10;
+const orbGeo = new THREE.SphereGeometry(0.28, 24, 16);
+const orbMat = new THREE.MeshStandardMaterial({ color: 0xfde68a, emissive: 0xf59e0b, emissiveIntensity: 1.4, roughness: 0.2 });
+const goldMat = new THREE.MeshStandardMaterial({ color: 0xfef08a, emissive: 0xfacc15, emissiveIntensity: 2.2, roughness: 0.2 });
+const orbs = [];
+const game = { active: false, score: 0, timeLeft: GAME_TIME };
+let bestScore = 0;
+let lastHudText = "";
+try {
+  bestScore = Number(localStorage.getItem("irusu-best") || 0);
+} catch (_) {
+  bestScore = 0;
+}
+
+function spawnOrb(o) {
+  o.gold = Math.random() < 0.2;
+  o.x = (Math.random() * 2 - 1) * 4;   // spread across the visible arc
+  o.y = (Math.random() * 2 - 1) * 2;
+  o.alive = true;
+  o.respawnAt = 0;
+  o.mesh.material = o.gold ? goldMat : orbMat;
+  o.mesh.position.set(o.x, o.y, -CAM_DIST);
+  o.mesh.visible = true;
+}
+
+for (let i = 0; i < ORB_COUNT; i++) {
+  const mesh = new THREE.Mesh(orbGeo, orbMat);
+  mesh.visible = false;
+  scene.add(mesh);
+  orbs.push({ mesh, x: 0, y: 0, alive: false, gold: false, respawnAt: 0 });
+}
+
+function updateGameHud() {
+  const text = `${Math.max(0, Math.ceil(game.timeLeft))}s · ${game.score} pts · best ${bestScore}`;
+  if (text !== lastHudText) {
+    gamePill.textContent = text;
+    lastHudText = text;
+  }
+}
+
+function startGame() {
+  game.active = true;
+  game.score = 0;
+  game.timeLeft = GAME_TIME;
+  for (const o of orbs) spawnOrb(o);
+  gameOver.classList.add("hidden");
+  gamePill.classList.remove("hidden");
+  lastHudText = "";
+  updateGameHud();
+}
+
+function endGame() {
+  game.active = false;
+  game.timeLeft = 0;
+  for (const o of orbs) {
+    o.alive = false;
+    o.mesh.visible = false;
+  }
+  if (game.score > bestScore) {
+    bestScore = game.score;
+    try {
+      localStorage.setItem("irusu-best", String(bestScore));
+    } catch (_) {}
+  }
+  updateGameHud();
+  gameOverText.textContent = `You scored ${game.score}. Best: ${bestScore}.`;
+  gameOver.classList.remove("hidden");
+}
+
+function updateGame(dt, t) {
+  if (!game.active) return;
+  game.timeLeft -= dt;
+  if (game.timeLeft <= 0) {
+    endGame();
+    return;
+  }
+
+  const reach = 1.3 * cur.scale;
+  for (const o of orbs) {
+    if (!o.alive) {
+      if (t >= o.respawnAt) spawnOrb(o);
+      continue;
+    }
+    o.mesh.rotation.y += dt * 2;
+    o.mesh.scale.setScalar(1 + Math.sin(t * 4 + o.x) * 0.12);
+    if (Math.hypot(o.x - cur.x, o.y - cur.y) < reach) {
+      o.alive = false;
+      o.mesh.visible = false;
+      o.respawnAt = t + 0.8;
+      game.score += o.gold ? 3 : 1;
+    }
+  }
+  updateGameHud();
+}
+
+function toggleGame() {
+  if (game.active) endGame();
+  startGame();
+}
+
+// ---------------------------------------------------------------------------
 // Headset mode: side-by-side stereo for a phone VR viewer (Cardboard-style)
 // ---------------------------------------------------------------------------
 const stereo = new THREE.StereoCamera();
@@ -646,8 +756,15 @@ function frame(now) {
 
   if (!handLandmarks && !pointerActive) {
     setIdleTarget(t);
+    if (game.active) {
+      // No hand: the monster follows the centre of your view (turn the phone to steer)
+      const g = screenToWorld(window.innerWidth / 2, window.innerHeight / 2);
+      target.x = g.x;
+      target.y = g.y;
+    }
   }
 
+  updateGame(dt, t);
   updateCameraLook(dt);
   updateMonster(dt, t);
   renderFrame();
@@ -708,6 +825,8 @@ resetBtn.addEventListener("click", () => {
 });
 
 headsetBtn.addEventListener("click", () => setHeadset(!headsetOn));
+gameBtn.addEventListener("click", toggleGame);
+playAgainBtn.addEventListener("click", startGame);
 
 window.addEventListener("resize", resize);
 window.addEventListener("orientationchange", resize);
